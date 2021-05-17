@@ -2,7 +2,6 @@ import asyncio
 import logging
 import socket
 import ssl
-import uuid
 
 import aioprometheus
 
@@ -13,6 +12,7 @@ UPSTREAM_ADDRESS = '1.1.1.1'
 UPSTREAM_PORT = 853
 
 logger = logging.getLogger(__name__)
+
 
 const_labels = {
     "host": socket.gethostname(),
@@ -30,9 +30,14 @@ msvc.register(REQUEST_TIME)
 async def query_upstream_server(raw_data):
     """Query a DNS-over-TLS backend server with the given data."""
 
+    # To establish a SSL/TLS connection not vulnerable to man-in-the-middle attacks,
+    # it's essential to make sure the server presents the right certificate.
+    # The certificate's hostname-specific data should match the server hostname.
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = True
+
     # open_connection will create a SSL socket and perform the handshake with upstream server
-    reader, writer = await asyncio.open_connection(
-        UPSTREAM_ADDRESS, UPSTREAM_PORT, ssl=ssl.create_default_context())
+    reader, writer = await asyncio.open_connection(UPSTREAM_ADDRESS, UPSTREAM_PORT, ssl=ctx)
 
     logger.debug("Quering upstream server with %r", raw_data)
     writer.write(raw_data)
