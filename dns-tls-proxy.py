@@ -1,30 +1,31 @@
 import asyncio
 import logging
+import os
 import socket
 import ssl
 
 import aioprometheus
 
-FORMAT = "%(asctime)s %(name)-4s %(process)d %(levelname)-6s %(funcName)-8s %(message)s"
-BIND_ADDRESS = '0.0.0.0'
-BIND_PORT = 5353
-UPSTREAM_ADDRESS = '1.1.1.1'
+BIND_ADDRESS = os.getenv('BIND_ADDRESS', '0.0.0.0')
+BIND_PORT = os.getenv('BIND_PORT', '53')
+METRICS_PORT = os.getenv('METRICS_PORT', '5000')
+UPSTREAM_ADDRESS = os.getenv('UPSTREAM_ADDRESS', '1.1.1.1')
 UPSTREAM_PORT = 853
+DEBUG = os.getenv('DEBUG', 0)
 
+FORMAT = "%(asctime)s %(name)-4s %(process)d %(levelname)-6s %(funcName)-8s %(message)s"
 logger = logging.getLogger(__name__)
 
 
 const_labels = {
     "host": socket.gethostname(),
 }
-
 REQUESTS = aioprometheus.Counter("requests", "Number of requests.", const_labels=const_labels)
 REQUEST_TIME = aioprometheus.Summary("request_processing_seconds", "Time spent processing request",
                                      const_labels=const_labels)
-
-msvc = aioprometheus.Service()
-msvc.register(REQUESTS)
-msvc.register(REQUEST_TIME)
+metric_svc = aioprometheus.Service()
+metric_svc.register(REQUESTS)
+metric_svc.register(REQUEST_TIME)
 
 
 async def query_upstream_server(raw_data):
@@ -35,6 +36,7 @@ async def query_upstream_server(raw_data):
     # The certificate's hostname-specific data should match the server hostname.
     ctx = ssl.create_default_context()
     ctx.check_hostname = True
+    ctx.verify_mode = ssl.CERT_REQUIRED
 
     # open_connection will create a SSL socket and perform the handshake with upstream server
     reader, writer = await asyncio.open_connection(UPSTREAM_ADDRESS, UPSTREAM_PORT, ssl=ctx)
@@ -72,15 +74,19 @@ async def main():
     logging.basicConfig(format=FORMAT)
 
     logger = logging.getLogger(__name__)
-    logger.setLevel(logging.DEBUG)
+    log_level = logging.DEBUG if DEBUG else logging.INFO
+    logger.setLevel(log_level)
+
+
     logger.info("Starting DNS-over-TLS proxy")
-
-    await msvc.start(addr='0.0.0.0', port=5000)
-    REQUESTS.set(const_labels, 0)
-
     server = await asyncio.start_server(handle_dns_query, BIND_ADDRESS, BIND_PORT)
     addr = server.sockets[0].getsockname()
-    logger.info("DNS-over-TLS proxy started. listening on %s", addr)
+
+    await metric_svc.start(addr=BIND_ADDRESS, port=METRICS_PORT)
+    REQUESTS.set(const_labels, 0)
+
+    logger.info("Started DNS-over-TLS proxy, listening on %s, metrics available on %s",
+                addr, metric_svc.metrics_url)
 
     async with server:
         await server.serve_forever()
